@@ -1,0 +1,8 @@
+numpy
+scipy
+sounddevice
+soundfile
+PyQt6
+pyyaml
+mutagen
+pyinstaller
