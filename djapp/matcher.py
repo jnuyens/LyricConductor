@@ -138,7 +138,11 @@ class LiveMatcher:
 
         hop = self.fp.hop_size
         off_sec = (best_off * hop) / self.sample_rate
-        return {"track_id": best_track, "confidence": int(best_conf), "offset_sec": float(off_sec)}
+        #return {"track_id": best_track, "confidence": int(best_conf), "offset_sec": float(off_sec)}
+        # off_sec refers to the start of the audio_segment (the window)
+        # Convert to "now" by adding the window duration
+        now_sec = float(off_sec + self.listen_seconds)
+        return {"track_id": best_track, "confidence": int(best_conf), "offset_sec": float(now_sec)}
 
     def _switch_track(self, track_id: str, offset_sec: float, confidence: int):
         meta = self.meta_by_id.get(track_id)
