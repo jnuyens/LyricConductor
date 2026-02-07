@@ -46,6 +46,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='LyricConductor.app',
-    icon='LyricConductor.icns',
-    bundle_identifier=None,
+    icon='assets/LyricConductor.icns',
+    bundle_identifier='com.lyricconductor',
+    info_plist='build/macos/Info.plist',
 )
