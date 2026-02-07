@@ -1,4 +1,4 @@
-#  LyricConductor (macOS Apple Silicon)
+#  LyricConductor
 
 This project scans a music root folder where each song lives in its own directory that contains:
 - one .mp3
