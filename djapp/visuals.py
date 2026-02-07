@@ -1,10 +1,11 @@
 from __future__ import annotations
+from PyQt6.QtGui import QPainter, QImage
+from PyQt6.QtMultimedia import QVideoSink
 from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QFont, QPixmap, QPalette, QColor
 from PyQt6.QtWidgets import QWidget, QLabel, QVBoxLayout, QHBoxLayout, QStackedLayout
 
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-from PyQt6.QtMultimediaWidgets import QVideoWidget
 
 from djapp.settings import load_settings, save_settings
 
@@ -35,6 +36,43 @@ def prevent_sleep_stop():
     if _caffeinate_proc is not None:
         _caffeinate_proc.terminate()
         _caffeinate_proc = None
+
+
+class VideoCanvas(QWidget):
+    def __init__(self):
+        super().__init__()
+        self._img: QImage | None = None
+        self.setStyleSheet("background-color: black;")
+
+    def set_frame(self, img: QImage):
+        self._img = img
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._img is None or self._img.isNull():
+            return
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        # Letterbox scaling
+        w = self.width()
+        h = self.height()
+        iw = self._img.width()
+        ih = self._img.height()
+        if iw <= 0 or ih <= 0:
+            return
+
+        scale = min(w / iw, h / ih)
+        tw = int(iw * scale)
+        th = int(ih * scale)
+        x = (w - tw) // 2
+        y = (h - th) // 2
+
+        p.drawImage(x, y, self._img.scaled(tw, th, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        p.end()
+
 
 
 class LetterboxImage(QWidget):
@@ -71,17 +109,21 @@ class LetterboxImage(QWidget):
 class LoopingVideo(QWidget):
     def __init__(self):
         super().__init__()
-        self.video = QVideoWidget(self)
+        self.canvas = VideoCanvas()
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
         self.audio.setVolume(0.0)
         self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(self.video)
+
+        self.sink = QVideoSink(self)
+        self.player.setVideoOutput(self.sink)
+        self.sink.videoFrameChanged.connect(self._on_frame)
         self.player.mediaStatusChanged.connect(self._status)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.video)
+        layout.addWidget(self.canvas)
+
         self._url = None
 
     def set_video(self, path: str):
@@ -95,6 +137,14 @@ class LoopingVideo(QWidget):
         if status == QMediaPlayer.MediaStatus.EndOfMedia and self._url is not None:
             self.player.setPosition(0)
             self.player.play()
+
+    def _on_frame(self, frame):
+        if frame is None or not frame.isValid():
+            return
+        img = frame.toImage()
+        if img.isNull():
+            return
+        self.canvas.set_frame(img)
 
 
 class PresentationWindow(QWidget):
