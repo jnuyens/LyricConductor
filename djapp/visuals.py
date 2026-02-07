@@ -6,6 +6,36 @@ from PyQt6.QtWidgets import QWidget, QLabel, QVBoxLayout, QHBoxLayout, QStackedL
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 
+from djapp.settings import load_settings, save_settings
+
+import sys
+import subprocess
+
+_IS_MACOS = sys.platform == "darwin"
+_caffeinate_proc = None
+
+def prevent_sleep_start():
+    global _caffeinate_proc
+    if not _IS_MACOS:
+        return
+
+    if _caffeinate_proc is None:
+        _caffeinate_proc = subprocess.Popen(
+            ["caffeinate", "-dimsu"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def prevent_sleep_stop():
+    global _caffeinate_proc
+    if not _IS_MACOS:
+        return
+
+    if _caffeinate_proc is not None:
+        _caffeinate_proc.terminate()
+        _caffeinate_proc = None
+
 
 class LetterboxImage(QWidget):
     def __init__(self):
@@ -75,6 +105,17 @@ class PresentationWindow(QWidget):
         self.cfg = cfg
         self.matcher = matcher
         self._last_track_id = None
+        self.fallback_mode = False
+        self.default_bg = cfg.get("default_background", "")
+
+        st = load_settings()
+        self.lyrics_offset_ms = int(st.get("lyrics_offset_ms", -1500))
+        if self.lyrics_offset_ms < -3000:
+            self.lyrics_offset_ms = -3000
+        if self.lyrics_offset_ms > 3000:
+            self.lyrics_offset_ms = 3000
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
 
         self.setWindowTitle("DJ Visual Lyrics Presentation")
         pal = self.palette()
@@ -98,6 +139,22 @@ class PresentationWindow(QWidget):
         self.overlay.setStyleSheet("background: transparent;")
         self.overlay.raise_()
 
+        self.hint_label = QLabel("Press Esc to exit. Press any key to hide lyrics.", self.overlay)
+        self.hint_label.setStyleSheet("color: white; background-color: rgba(0,0,0,180); padding: 12px;")
+        self.hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hf = QFont("Helvetica", 22)
+        self.hint_label.setFont(hf)
+        self.hint_label.setFixedHeight(60)
+
+        self.offset_toast = QLabel("", self.overlay)
+        self.offset_toast.setStyleSheet("color: white; background-color: rgba(0,0,0,180); padding: 10px;")
+        self.offset_toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tf = QFont("Helvetica", 20)
+        self.offset_toast.setFont(tf)
+        self.offset_toast.setFixedHeight(52)
+        self.offset_toast.hide()
+        self._toast_timer.timeout.connect(self.offset_toast.hide)
+
         lyr_cfg = cfg["display"]["lyrics"]
         self.lyrics_label = QLabel("")
         self.lyrics_label.setWordWrap(True)
@@ -117,6 +174,8 @@ class PresentationWindow(QWidget):
         self.meta_label.setFont(mf)
 
         ov = QVBoxLayout(self.overlay)
+        ov.addWidget(self.hint_label, 0)
+        QTimer.singleShot(2500, self.hint_label.hide)
         ov.setContentsMargins(0, 0, 0, 0)
 
         top_wrap = QWidget()
@@ -126,6 +185,9 @@ class PresentationWindow(QWidget):
         ov.addWidget(top_wrap, 0)
 
         ov.addStretch(1)
+
+        # transient offset change display (bottom center)
+        ov.addWidget(self.offset_toast, 0)
 
         bottom = QWidget()
         bl = QHBoxLayout(bottom)
@@ -149,6 +211,62 @@ class PresentationWindow(QWidget):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
             self.close()
+            return
+
+        k = event.key()
+
+        # Offset adjust during presentation: + and -
+        if k in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self._adjust_offset(+50)
+            event.accept()
+            return
+        if k in (Qt.Key.Key_Minus, Qt.Key.Key_Underscore):
+            self._adjust_offset(-50)
+            event.accept()
+            return
+
+        # Any other key toggles fallback mode
+        self.fallback_mode = not self.fallback_mode
+        self._last_track_id = None  # force refresh
+
+        if self.fallback_mode:
+            # Show default background, hide lyrics/meta immediately
+            if self.default_bg:
+                self.bg_stack.setCurrentWidget(self.bg_img)
+                self.bg_img.set_image(self.default_bg)
+            self.lyrics_label.setText("")
+            self.meta_label.setText("")
+        event.accept()
+
+    def _save_offset(self):
+        st = load_settings()
+        st["lyrics_offset_ms"] = int(self.lyrics_offset_ms)
+        save_settings(st)
+
+    def _offset_label(self) -> str:
+        v = int(self.lyrics_offset_ms)
+        if v < 0:
+            return f"Lyrics: {abs(v)} ms early"
+        if v > 0:
+            return f"Lyrics: {v} ms late"
+        return "Lyrics: 0 ms"
+
+    def _show_offset_toast(self):
+        self.offset_toast.setText(self._offset_label())
+        self.offset_toast.show()
+        # Hide after ~1.2s
+        self._toast_timer.start(1200)
+
+    def _adjust_offset(self, delta_ms: int):
+        v = int(self.lyrics_offset_ms) + int(delta_ms)
+        if v < -3000:
+            v = -3000
+        if v > 3000:
+            v = 3000
+        self.lyrics_offset_ms = v
+        self._save_offset()
+        self._show_offset_toast()
+
 
     def _apply_background(self, meta: dict):
         bg = (meta or {}).get("background") or {}
@@ -163,6 +281,8 @@ class PresentationWindow(QWidget):
             self.bg_img.set_image(path)
 
     def _tick(self):
+        if self.fallback_mode:
+            return
         st = self.matcher.get_state()
         meta = st["meta"]
         track_id = st["track_id"]
@@ -179,7 +299,8 @@ class PresentationWindow(QWidget):
                 self.lyrics_label.setText("")
 
         if lrc and track_time is not None:
-            cur, nxt = lrc.current_line(track_time)
+            effective_t = float(track_time) + (float(self.lyrics_offset_ms) / 1000.0)
+            cur, nxt = lrc.current_line(effective_t)
             self.lyrics_label.setText(cur or nxt or "")
         else:
             self.lyrics_label.setText("")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 import os
 import sys
+from djapp.settings import load_settings, save_settings
+import yaml
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -12,6 +14,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QComboBox,
     QMessageBox,
+    QSpinBox,
 )
 
 from djapp.scanlib import scan_music_root, write_config, default_config_path
@@ -25,7 +28,7 @@ from djapp.fingerprint import Fingerprinter, load_fp_cache, save_fp_cache
 class ControlWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DJ Visual Lyrics")
+        self.setWindowTitle("LyricConductor")
 
         self.music_root = None
         self.config = None
@@ -66,18 +69,143 @@ class ControlWindow(QWidget):
         row2.addWidget(self.btn_refresh_dev)
         lay.addLayout(row2)
 
+        # Lyrics timing offset (ms): negative = earlier, positive = later
+        self.offset_spin = QSpinBox()
+        self.offset_spin.setRange(-3000, 3000)
+        self.offset_spin.setSingleStep(50)
+
+        st2 = load_settings()
+        cur_off = int(st2.get("lyrics_offset_ms", -1500))
+        if cur_off < -3000:
+            cur_off = -3000
+        if cur_off > 3000:
+            cur_off = 3000
+        self.offset_spin.setValue(cur_off)
+
+        self.offset_hint = QLabel("")
+        self._update_offset_hint(cur_off)
+
+        def _on_off_change(v: int):
+            v = int(v)
+            if v < -3000:
+                v = -3000
+            if v > 3000:
+                v = 3000
+            self._update_offset_hint(v)
+            stx = load_settings()
+            stx["lyrics_offset_ms"] = v
+            save_settings(stx)
+
+        self.offset_spin.valueChanged.connect(_on_off_change)
+
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Lyrics offset (ms):"))
+        row3.addWidget(self.offset_spin)
+        row3.addWidget(self.offset_hint, 1)
+        lay.addLayout(row3)
+
         lay.addWidget(self.btn_start)
         self.setMinimumWidth(700)
 
+        # Load last music root after UI exists
+        st = load_settings()
+        last = st.get("music_root")
+        if last and os.path.isdir(last):
+            self.music_root = last
+            self.root_label.setText(f"Music root: {last}")
+            self.btn_scan.setEnabled(True)
+
+            # Try to use cached config immediately
+            if not self._try_load_existing_config():
+                self.scan_label.setText("Scan: pending")
+                self.btn_start.setEnabled(False)
+
+    def _try_load_existing_config(self) -> bool:
+        if not self.music_root:
+            return False
+
+        cfg_path = default_config_path(self.music_root)
+        if not os.path.exists(cfg_path):
+            return False
+
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+
+            tracks = cfg.get("tracks") or []
+            if not tracks:
+                return False
+
+            # Require fingerprint caches for every track
+            for t in tracks:
+                cache_path = t.get("fingerprint_cache")
+                if not cache_path or not os.path.exists(cache_path):
+                    return False
+
+            # If DB missing, rebuild it quickly from caches (no audio fingerprinting)
+            db_path = (cfg.get("database") or {}).get("path")
+            if not db_path:
+                return False
+
+            db_exists = os.path.exists(db_path)
+
+            db = FingerprintDB(db_path)
+            db.init_schema()
+
+            # If DB exists and already has hashes, do not rebuild on startup
+            if db_exists:
+                try:
+                    with db._conn() as c:
+                        row = c.execute("SELECT COUNT(*) FROM hashes").fetchone()
+                        if row and int(row[0]) > 0:
+                            self.config = cfg
+                            self.scan_label.setText(f"Scan: OK (cached), {len(tracks)} tracks")
+                            self.btn_start.setEnabled(True)
+                            return True
+                except Exception:
+                    # fall through to rebuild
+                    pass
+
+            for t in tracks:
+                db.upsert_track(track_id=t["id"], meta=t)
+                hashes = load_fp_cache(t["fingerprint_cache"])
+                db.replace_hashes(track_id=t["id"], hashes=hashes)
+
+            self.config = cfg
+            self.scan_label.setText(f"Scan: OK (cached), {len(tracks)} tracks")
+            self.btn_start.setEnabled(True)
+            return True
+
+        except Exception:
+            return False
+
+    def _update_offset_hint(self, v: int):
+        if v < 0:
+            self.offset_hint.setText(f"{abs(v)} ms early")
+        elif v > 0:
+            self.offset_hint.setText(f"{v} ms late")
+        else:
+            self.offset_hint.setText("0 ms")
+
+
     def pick_root(self):
-        d = QFileDialog.getExistingDirectory(self, "Choose Music Root")
+        d = QFileDialog.getExistingDirectory(self, "Choose Music Directory")
         if not d:
             return
         self.music_root = d
+
+        st = load_settings()
+        st["music_root"] = d
+        save_settings(st)
+
         self.root_label.setText(f"Music root: {d}")
         self.btn_scan.setEnabled(True)
-        self.btn_start.setEnabled(False)
-        self.scan_label.setText("Scan: pending")
+
+        # Try cached config first
+        if not self._try_load_existing_config():
+            self.btn_start.setEnabled(False)
+            self.scan_label.setText("Scan: pending")
+
 
     def refresh_devices(self):
         self.device_combo.clear()

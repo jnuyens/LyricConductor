@@ -11,7 +11,7 @@ class FingerprintDB:
         self.path = path
 
     def _conn(self):
-        return sqlite3.connect(self.path)
+        return sqlite3.connect(self.path, timeout=5.0)
 
     def init_schema(self):
         with self._conn() as c:

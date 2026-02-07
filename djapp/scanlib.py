@@ -33,6 +33,12 @@ def _first_or_none(patterns: List[str]) -> Optional[str]:
             return sorted(matches)[0]
     return None
 
+def find_default_background(music_root: str) -> str:
+    for name in ["default.jpg", "default.jpeg", "default.png", "cover.jpg", "cover.png"]:
+        p = os.path.join(os.path.abspath(music_root), name)
+        if os.path.exists(p):
+            return p
+    return ""
 
 def _make_track_id(mp3_path: str) -> str:
     h = hashlib.sha1(mp3_path.encode("utf-8")).hexdigest()[:12]
@@ -121,7 +127,8 @@ def default_config_path(music_root: str) -> str:
 
 def write_config(root: str, tracks: List[TrackInfo], config_path: str) -> dict:
     cfg = {
-        "version": 1,
+        "version": 2,
+        "default_background": find_default_background(root),
         "music_root": os.path.abspath(root),
         "database": {"path": os.path.join(os.path.abspath(root), ".djvisuallyrics.sqlite")},
         "audio": {

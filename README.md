@@ -1,4 +1,4 @@
-# DJVisualLyrics (macOS Apple Silicon)
+#  LyricConductor (macOS Apple Silicon)
 
 This project scans a music root folder where each song lives in its own directory that contains:
 - one .mp3
@@ -35,7 +35,7 @@ python app.py
 ## Build a standalone macOS app
 ```bash
 source .venv/bin/activate
-pyinstaller --noconfirm --windowed --name "DJVisualLyrics" app.py
+pyinstaller --noconfirm --windowed --name "LyricConductor" app.py
 ```
 
 Output:
